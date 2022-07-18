@@ -21,6 +21,7 @@ package viper
 
 import (
 	"bytes"
+	"context"
 	"encoding/csv"
 	"errors"
 	"fmt"
@@ -222,6 +223,10 @@ type Viper struct {
 	// TODO: should probably be protected with a mutex
 	encoderRegistry *encoding.EncoderRegistry
 	decoderRegistry *encoding.DecoderRegistry
+
+	eventsCtx    context.Context
+	eventsCancel func()
+	eventsWG     sync.WaitGroup
 }
 
 // New returns an initialized Viper instance.
@@ -449,14 +454,15 @@ func (v *Viper) WatchConfig() {
 		configDir, _ := filepath.Split(configFile)
 		realConfigFile, _ := filepath.EvalSymlinks(filename)
 
-		eventsWG := sync.WaitGroup{}
-		eventsWG.Add(1)
+		v.eventsCtx, v.eventsCancel = context.WithCancel(context.Background())
+		v.eventsWG = sync.WaitGroup{}
+		v.eventsWG.Add(1)
 		go func() {
 			for {
 				select {
 				case event, ok := <-watcher.Events:
 					if !ok { // 'Events' channel is closed
-						eventsWG.Done()
+						v.eventsWG.Done()
 						return
 					}
 					currentConfigFile, _ := filepath.EvalSymlinks(filename)
@@ -477,7 +483,7 @@ func (v *Viper) WatchConfig() {
 						}
 					} else if filepath.Clean(event.Name) == configFile &&
 						event.Op&fsnotify.Remove != 0 {
-						eventsWG.Done()
+						v.eventsWG.Done()
 						return
 					}
 
@@ -485,14 +491,17 @@ func (v *Viper) WatchConfig() {
 					if ok { // 'Errors' channel is not closed
 						log.Printf("watcher error: %v\n", err)
 					}
-					eventsWG.Done()
+					v.eventsWG.Done()
+					return
+				case <-v.eventsCtx.Done():
+					v.eventsWG.Done()
 					return
 				}
 			}
 		}()
 		watcher.Add(configDir)
-		initWG.Done()   // done initializing the watch in this go routine, so the parent routine can move on...
-		eventsWG.Wait() // now, wait for event loop to end in this go-routine...
+		initWG.Done()     // done initializing the watch in this go routine, so the parent routine can move on...
+		v.eventsWG.Wait() // now, wait for event loop to end in this go-routine...
 	}()
 	initWG.Wait() // make sure that the go routine above fully ended before returning
 }
@@ -633,6 +642,20 @@ func (v *Viper) AddSecureRemoteProvider(provider, endpoint, path, secretkeyring 
 			v.remoteProviders = append(v.remoteProviders, rp)
 		}
 	}
+	return nil
+}
+
+// Stop
+func Stop() error {
+	return v.Stop()
+}
+
+func (v *Viper) Stop() error {
+	if v.eventsCtx == nil {
+		return errors.New("call to Stop when no file watcher was started")
+	}
+	v.eventsCancel()
+	v.eventsWG.Wait()
 	return nil
 }
 

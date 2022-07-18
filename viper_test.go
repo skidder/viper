@@ -2400,6 +2400,50 @@ func TestWatchFile(t *testing.T) {
 		assert.Equal(t, "baz", v.Get("foo"))
 	})
 
+	t.Run("file watcher stopped", func(t *testing.T) {
+		// given a `config.yaml` file being watched
+		v, configFile, cleanup := newViperWithConfigFile(t)
+		defer cleanup()
+		_, err := os.Stat(configFile)
+		require.NoError(t, err)
+		t.Logf("test config file: %s\n", configFile)
+		wg := sync.WaitGroup{}
+		wg.Add(1)
+		var wgDoneOnce sync.Once // OnConfigChange is called twice on Windows
+		v.OnConfigChange(func(in fsnotify.Event) {
+			t.Logf("config file changed")
+			wgDoneOnce.Do(func() {
+				wg.Done()
+			})
+		})
+		v.WatchConfig()
+		v.Stop()
+		// then
+		require.Nil(t, err)
+	})
+
+	t.Run("file watcher stopped without watcher running", func(t *testing.T) {
+		// given a `config.yaml` file being watched
+		v, configFile, cleanup := newViperWithConfigFile(t)
+		defer cleanup()
+		_, err := os.Stat(configFile)
+		require.NoError(t, err)
+		t.Logf("test config file: %s\n", configFile)
+		wg := sync.WaitGroup{}
+		wg.Add(1)
+		var wgDoneOnce sync.Once // OnConfigChange is called twice on Windows
+		v.OnConfigChange(func(in fsnotify.Event) {
+			t.Logf("config file changed")
+			wgDoneOnce.Do(func() {
+				wg.Done()
+			})
+		})
+
+		err = v.Stop()
+		// then
+		require.NotNil(t, err)
+	})
+
 	t.Run("link to real file changed (à la Kubernetes)", func(t *testing.T) {
 		// skip if not executed on Linux
 		if runtime.GOOS != "linux" {
